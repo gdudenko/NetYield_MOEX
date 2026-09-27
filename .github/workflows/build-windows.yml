@@ -28,6 +28,10 @@ jobs:
         run: >
           pyinstaller --noconfirm --onedir --windowed
           --name NetYield_MOEX
+          --paths=.
+          --hidden-import=config
+          --hidden-import=logger
+          --hidden-import=error_handler
           --collect-data customtkinter
           --collect-data tkcalendar
           run_gui.py
