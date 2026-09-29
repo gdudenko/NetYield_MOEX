@@ -24,6 +24,9 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      - name: Show checkout contents
+        run: dir
+
       - name: Build EXE
         run: >
           pyinstaller --noconfirm --onedir --windowed
@@ -35,6 +38,11 @@ jobs:
           --collect-data customtkinter
           --collect-data tkcalendar
           run_gui.py
+
+      - name: Build and run frozen smoke test
+        run: |
+          pyinstaller --noconfirm --onedir --console --name smoke_test --paths=. --hidden-import=config smoke_test.py
+          .\dist\smoke_test\smoke_test.exe
 
       - name: Archive build
         run: >
