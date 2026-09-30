@@ -24,29 +24,23 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Sanity check checkout
-        shell: pwsh
-        run: |
-          $required = @(
-            'app_config.py','logger.py','error_handler.py',
-            'main.py','run_gui.py','smoke_test.py',
-            'app_icon.ico','app_icon.png',
-            'services','analysis','ui'
-          )
-          foreach ($f in $required) {
-            if (-not (Test-Path $f)) { throw "В РЕПОЗИТОРИИ ОТСУТСТВУЕТ: $f" }
-          }
-          Write-Host "All project files present in checkout"
-
+      # Smoke-тест собирается теми же флагами, что и релиз, и отличается
+      # только --console вместо --windowed, чтобы видеть вывод.
+      # Расхождение флагов означало, что проверяется не то, что уезжает
+      # пользователю. Он ловит битые сборки, которые PyInstaller собирает
+      # молча и с "Build complete!".
       - name: Build EXE
         shell: pwsh
         run: |
           pyinstaller --noconfirm --onedir --windowed --name NetYield_MOEX --icon=app_icon.ico --add-data "app_icon.ico;." --add-data "app_icon.png;." --paths=. --hidden-import=app_config --collect-data customtkinter --collect-data tkcalendar run_gui.py
 
+      # Smoke-тест: те же флаги, что выше, и ТОЛЬКО --console вместо
+      # --windowed, чтобы видеть вывод. Он ловит битые сборки, которые
+      # PyInstaller собирает молча и с "Build complete!".
       - name: Build and run frozen smoke test
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --onedir --console --name smoke_test --paths=. --hidden-import=app_config smoke_test.py
+          pyinstaller --noconfirm --onedir --console --name smoke_test --icon=app_icon.ico --add-data "app_icon.ico;." --add-data "app_icon.png;." --paths=. --hidden-import=app_config --collect-data customtkinter --collect-data tkcalendar smoke_test.py
           $env:PYTHONIOENCODING = "utf-8"
           .\dist\smoke_test\smoke_test.exe
 
