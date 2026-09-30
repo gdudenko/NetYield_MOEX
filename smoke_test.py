@@ -1,3 +1,5 @@
+import sys
+
 # Страховка от кодировок консоли раннера
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -7,9 +9,9 @@ except Exception:
 print("Smoke test: checking bundled modules...")
 
 try:
-    import config
+    import app_config
 
-    print("CONFIG OK: version", getattr(config, "APP_VERSION", "not-set"))
+    print("CONFIG OK: version", getattr(app_config, "APP_VERSION", "not-set"))
 except Exception as e:
     print("CONFIG FAIL:", type(e).__name__, e)
     sys.exit(1)

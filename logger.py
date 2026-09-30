@@ -13,7 +13,7 @@
 
 import logging
 import sys
-import config
+import app_config as config
 
 
 def get_logger(name: str) -> logging.Logger:

@@ -4,7 +4,7 @@
 
 import requests
 import pandas as pd
-import config
+import app_config as config
 from logger import get_logger
 from error_handler import log_network_error, log_parse_error
 

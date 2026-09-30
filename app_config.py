@@ -205,10 +205,8 @@ LOG_FILE = os.path.join(BASE_DIR, 'net_yield.log')
 RESULT_CSV = os.path.join(BASE_DIR, 'net_yield_result.csv')
 
 # Формат сообщения в файле (с датой, модулем, функцией)
-LOG_os.path.join(BASE_DIR, 'net_yield.log')
-    '%(asctime)s | %(levelname)-8s | %(name)-25s | '
-    '%(funcName)-30s | %(message)s'
-)
+
+LOG_FILE_FORMAT = '%(asctime)s | %(levelname)-8s | %(name)-25s | '
 
 # Формат сообщения в консоли (короткий)
 LOG_CONSOLE_FORMAT = '%(levelname)-8s | %(message)s'

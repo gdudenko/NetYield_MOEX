@@ -3,7 +3,7 @@
 """
 
 import pandas as pd
-import config
+import app_config as config
 from logger import get_logger
 
 logger = get_logger(__name__)

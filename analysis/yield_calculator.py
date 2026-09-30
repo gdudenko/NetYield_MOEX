@@ -3,7 +3,7 @@
 """
 
 import pandas as pd
-import config
+import app_config as config
 from analysis.taxes import calculate_tax
 from logger import get_logger
 

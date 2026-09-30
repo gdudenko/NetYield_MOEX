@@ -2,7 +2,7 @@
 Расчёт налогов для ОФЗ и корпоративных облигаций.
 """
 
-import config
+import app_config as config
 
 
 def calculate_tax(

@@ -42,7 +42,7 @@ jobs:
       - name: Build and run frozen smoke test
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --onedir --console --name smoke_test --paths=. --hidden-import=config smoke_test.py
+          pyinstaller --noconfirm --onedir --console --name smoke_test --paths=. --hidden-import=app_config smoke_test.py
           $env:PYTHONIOENCODING = "utf-8"
           .\dist\smoke_test\smoke_test.exe
 

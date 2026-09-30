@@ -3,7 +3,7 @@
 """
 
 import pandas as pd
-import config
+import app_config as config
 
 
 def classify_coupon_type(coupon_details) -> str:

@@ -4,7 +4,7 @@ NetYield MOEX — калькулятор доходности облигаций
 
 import pandas as pd
 
-import config
+import app_config as config
 from logger import get_logger
 from services.cbr_rate import get_cbr_key_rate
 from services.moex_data import fetch_moex_data, prepare_data
