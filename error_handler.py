@@ -148,35 +148,3 @@ def log_calculation_error(
         extra_data['input_data'] = input_data
 
     log_error(error, context=context, extra_data=extra_data)
-
-
-def format_exception(error: Exception) -> str:
-    """
-    Форматирует исключение в читаемую строку для вывода пользователю.
-
-    Args:
-        error: Исключение.
-
-    Returns:
-        Отформатированная строка с описанием ошибки.
-    """
-    error_type = type(error).__name__
-    error_message = str(error)
-
-    # Маппинг типов ошибок на понятные сообщения
-    error_messages = {
-        'ConnectionError': 'Нет подключения к интернету',
-        'Timeout': 'Превышено время ожидания ответа от сервера',
-        'HTTPError': 'Сервер вернул ошибку',
-        'RequestException': 'Ошибка сетевого запроса',
-        'ParseError': 'Не удалось разобрать данные от сервера',
-        'ValueError': 'Некорректные данные',
-        'KeyError': 'Отсутствуют необходимые данные',
-        'ZeroDivisionError': 'Ошибка расчёта (деление на ноль)',
-    }
-
-    friendly_message = error_messages.get(
-        error_type, f'Произошла ошибка ({error_type})'
-    )
-
-    return f"{friendly_message}: {error_message}"

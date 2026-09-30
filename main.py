@@ -5,6 +5,7 @@ NetYield MOEX — калькулятор доходности облигаций
 import pandas as pd
 
 import app_config as config
+from error_handler import log_calculation_error
 from logger import get_logger
 from services.cbr_rate import get_cbr_key_rate
 from services.moex_data import fetch_moex_data, prepare_data
@@ -66,12 +67,22 @@ def analyze_reliable_bonds(
     errors_count = 0
 
     for _, row in df_reliable.iterrows():
+        # Инициализируем значения, по которым собираем контекст ошибки.
+        # Если исключение случится до их вычисления, обработчик обязан
+        # отработать, а не упасть с UnboundLocalError.
+        raw_secid = row.get('SECID', 'unknown')
+        secid = raw_secid if isinstance(raw_secid, str) else 'unknown'
+        facevalue = None
+        current_price = None
+        coupon_pct = None
+        is_ofz = None
+        matures_within_period = False
+
         try:
             facevalue = row['FACEVALUE']
             current_price = row['PRICE_PCT']
             is_ofz = row['IS_OFZ']
             mat_date = row['MATDATE']
-            secid = row['SECID']
             coupon_class = row['COUPON_CLASS']
             duration_days = row['DURATION_DAYS']
 
@@ -94,7 +105,7 @@ def analyze_reliable_bonds(
 
             purchase_price_rub = facevalue * current_price / 100
 
-            matures_within_period = (
+            matures_within_period = bool(
                 pd.notna(mat_date)
                 and mat_date <= sell_ts
                 and mat_date > buy_ts
@@ -166,20 +177,16 @@ def analyze_reliable_bonds(
 
         except Exception as e:
             errors_count += 1
-            from error_handler import log_calculation_error
-
             log_calculation_error(
                 e,
-                bond_id=row.get('SECID', 'unknown'),
+                bond_id=secid,
                 calculation_type=(
                     'maturity' if matures_within_period else 'sale'
                 ),
                 input_data={
                     'current_price': current_price,
                     'facevalue': facevalue,
-                    'coupon_pct': (
-                        coupon_pct if 'coupon_pct' in locals() else None
-                    ),
+                    'coupon_pct': coupon_pct,
                     'is_ofz': is_ofz,
                 },
             )
