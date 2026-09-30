@@ -54,6 +54,7 @@ class NetYieldApp(ctk.CTk):
         super().__init__()
 
         self.title("🏦 NetYield MOEX — Калькулятор доходности облигаций")
+        self._set_app_icon()
         self.geometry("1400x900")
         self.minsize(1200, 700)
 
@@ -802,6 +803,28 @@ class NetYieldApp(ctk.CTk):
         self.status_label.configure(
             text=f"📋 Скопировано: {values[0]} — {values[2]}"
         )
+
+    def _set_app_icon(self):
+        """Устанавливает иконку окна: .ico на Windows, .png на Linux/Wine."""
+        import os
+        import sys
+
+        if getattr(sys, "frozen", False):
+            base = sys._MEIPASS  # внутри сборки
+        else:
+            base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        try:
+            ico = os.path.join(base, "app_icon.ico")
+            png = os.path.join(base, "app_icon.png")
+            if os.path.exists(ico):
+                self.iconbitmap(ico)
+            if os.path.exists(png):
+                # Держим ссылку, чтобы PhotoImage не собрался сборщиком мусора
+                self._icon_img = tk.PhotoImage(file=png)
+                self.iconphoto(True, self._icon_img)
+        except Exception as e:
+            logger.debug(f"Не удалось установить иконку окна: {e}")
 
 
 # ============================================================
