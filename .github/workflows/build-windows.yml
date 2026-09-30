@@ -2,19 +2,19 @@ name: Build Windows EXE
 
 on:
   push:
-    tags: ["v*"] # Сборка и публикация по тегу версии
-  workflow_dispatch: # Ручной запуск (артефакт без Release)
+    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
-  contents: write # Нужно для создания Release
+  contents: write
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -24,20 +24,29 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Show checkout contents
-        run: dir
+      - name: Sanity check checkout
+        shell: pwsh
+        run: |
+          $required = @(
+            'app_config.py','logger.py','error_handler.py',
+            'main.py','run_gui.py','smoke_test.py',
+            'app_icon.ico','app_icon.png',
+            'services','analysis','ui'
+          )
+          foreach ($f in $required) {
+            if (-not (Test-Path $f)) { throw "В РЕПОЗИТОРИИ ОТСУТСТВУЕТ: $f" }
+          }
+          Write-Host "All project files present in checkout"
 
       - name: Build EXE
         run: >
           pyinstaller --noconfirm --onedir --windowed
           --name NetYield_MOEX
-          --icon=app_icon.icon
+          --icon=app_icon.ico
           --add-data "app_icon.ico;."
           --add-data "app_icon.png;."
           --paths=.
-          --hidden-import=config
-          --hidden-import=logger
-          --hidden-import=error_handler
+          --hidden-import=app_config
           --collect-data customtkinter
           --collect-data tkcalendar
           run_gui.py
@@ -45,7 +54,8 @@ jobs:
       - name: Build and run frozen smoke test
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --onedir --console --name smoke_test --paths=. --hidden-import=app_config smoke_test.py
+          pyinstaller --noconfirm --onedir --console
+          --name smoke_test --paths=. --hidden-import=app_config smoke_test.py
           $env:PYTHONIOENCODING = "utf-8"
           .\dist\smoke_test\smoke_test.exe
 
@@ -61,9 +71,18 @@ jobs:
           files: NetYield_MOEX-windows.zip
           generate_release_notes: true
 
-      - name: Upload artifact (для ручного запуска)
+      - name: Upload artifact (manual trigger)
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: NetYield_MOEX-windows
           path: dist/NetYield_MOEX
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: build-diagnostics
+          path: |
+            build/smoke_test/warn-smoke_test.txt
+            build/NetYield_MOEX/warn-NetYield_MOEX.txt
