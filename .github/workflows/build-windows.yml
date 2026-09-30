@@ -39,30 +39,20 @@ jobs:
           Write-Host "All project files present in checkout"
 
       - name: Build EXE
-        run: >
-          pyinstaller --noconfirm --onedir --windowed
-          --name NetYield_MOEX
-          --icon=app_icon.ico
-          --add-data "app_icon.ico;."
-          --add-data "app_icon.png;."
-          --paths=.
-          --hidden-import=app_config
-          --collect-data customtkinter
-          --collect-data tkcalendar
-          run_gui.py
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --onedir --windowed --name NetYield_MOEX --icon=app_icon.ico --add-data "app_icon.ico;." --add-data "app_icon.png;." --paths=. --hidden-import=app_config --collect-data customtkinter --collect-data tkcalendar run_gui.py
 
       - name: Build and run frozen smoke test
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --onedir --console
-          --name smoke_test --paths=. --hidden-import=app_config smoke_test.py
+          pyinstaller --noconfirm --onedir --console --name smoke_test --paths=. --hidden-import=app_config smoke_test.py
           $env:PYTHONIOENCODING = "utf-8"
           .\dist\smoke_test\smoke_test.exe
 
       - name: Archive build
-        run: >
-          Compress-Archive -Path dist/NetYield_MOEX
-          -DestinationPath NetYield_MOEX-windows.zip
+        run: |
+          Compress-Archive -Path dist/NetYield_MOEX -DestinationPath NetYield_MOEX-windows.zip
 
       - name: Publish Release
         if: startsWith(github.ref, 'refs/tags/')
