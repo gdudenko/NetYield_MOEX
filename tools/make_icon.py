@@ -1,11 +1,18 @@
 """
 Генерирует иконки приложения: app_icon.ico (для exe) и app_icon.png (для окна на Linux/Wine).
-Запуск: python make_icon.py
+
+Запуск: python tools/make_icon.py
+Иконки всегда пишутся в корень проекта, независимо от текущей директории.
+Требуется Pillow: pip install -r requirements-dev.txt
 """
+
+import os
 
 from PIL import Image, ImageDraw
 
 SIZE = 256
+
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def draw_icon() -> Image.Image:
@@ -43,11 +50,14 @@ def draw_icon() -> Image.Image:
 
 
 def main():
+    png_path = os.path.join(PROJECT_DIR, 'app_icon.png')
+    ico_path = os.path.join(PROJECT_DIR, 'app_icon.ico')
+
     img = draw_icon()
-    img.save("app_icon.png", format="PNG")
+    img.save(png_path, format='PNG')
     img.save(
-        "app_icon.ico",
-        format="ICO",
+        ico_path,
+        format='ICO',
         sizes=[
             (16, 16),
             (24, 24),
@@ -58,7 +68,7 @@ def main():
             (256, 256),
         ],
     )
-    print("✅ Созданы: app_icon.ico, app_icon.png")
+    print(f"✅ Созданы: {png_path}, {ico_path}")
 
 
 if __name__ == "__main__":

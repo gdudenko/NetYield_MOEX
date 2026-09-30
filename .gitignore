@@ -1,5 +1,6 @@
 # Виртуальное окружение
 venv/
+.venv/
 
 # Файлы логов
 *.log
@@ -7,11 +8,35 @@ venv/
 # Результаты анализа
 net_yield_result.csv
 
+# Сборка PyInstaller (артефакты генерируются заново при каждой сборке)
+build/
+dist/
+*.spec
+
+# Архивы и готовые сборки
+*.zip
+*.exe
+
 # Python
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
+
+# Кэши инструментов
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # IDE
 .vscode/
 .idea/
+
+# Системный мусор
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Локальные настройки и секреты
+.env
+.env.*

@@ -1,0 +1,8 @@
+# Зависимости для разработки и сборки (не нужны конечному пользователю).
+# Установка: pip install -r requirements.txt -r requirements-dev.txt
+
+# Генератор иконок приложения (tools/make_icon.py)
+pillow>=10.0.0
+
+# Сборка Windows EXE
+pyinstaller>=6.0.0
