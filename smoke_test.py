@@ -19,6 +19,9 @@ Smoke-тест собранного бандла.
 importlib.import_module. PyInstaller анализирует импорты статически и
 динамические в бандл не кладёт. Проверено экспериментально: с
 importlib бандл собирается "успешно", а на запуске падает на 16 модулей.
+Именно поэтому список импортов и список проверки — одно и то же
+перечисление, а не два независимых: добавили модуль в APP_MODULES,
+он автоматически проверяется.
 
 При добавлении нового модуля в приложение его нужно добавить и сюда.
 """
@@ -28,27 +31,31 @@ import sys
 
 # Страховка от кодировок консоли раннера
 try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
 except Exception:
     pass
 
 failures = []
 
 # Модули приложения. Порядок = порядок графа импортов run_gui.py/main.py.
+# Каждая строка обязана импортировать ИМЯ из левой колонки.
 try:
     import app_config
-    import logger
     import error_handler
-    from services import cbr_rate
-    from services import moex_data
+    import logger
+    import main
+    import run_gui
     from analysis import classification
     from analysis import filters
+    from analysis import pipeline
+    from analysis import result_schema
     from analysis import taxes
     from analysis import yield_calculator
+    from services import cbr_rate
+    from services import http
+    from services import moex_data
     from ui import console
     from ui import gui_app
-    import run_gui
-    import main
 
     # Сторонние пакеты, обязательные в бандле.
     import pandas
@@ -71,17 +78,21 @@ except BaseException as _e:
     print("  3. сборка выполнена с нуля — rm -rf build dist *.spec.")
     sys.exit(1)
 
-# (метка, объект) — импорты уже выполнены выше, осталось их проверить.
-CHECKED = [
+# Те же модули, что импортированы выше. Порядок в списке — только для
+# читаемости вывода.
+APP_MODULES = [
     ("app_config", app_config),
-    ("logger", logger),
     ("error_handler", error_handler),
-    ("services.cbr_rate", cbr_rate),
-    ("services.moex_data", moex_data),
+    ("logger", logger),
     ("analysis.classification", classification),
     ("analysis.filters", filters),
+    ("analysis.result_schema", result_schema),
     ("analysis.taxes", taxes),
     ("analysis.yield_calculator", yield_calculator),
+    ("analysis.pipeline", pipeline),
+    ("services.cbr_rate", cbr_rate),
+    ("services.http", http),
+    ("services.moex_data", moex_data),
     ("ui.console", console),
     ("ui.gui_app", gui_app),
     ("run_gui", run_gui),
@@ -97,10 +108,10 @@ CHECKED = [
 # действительно положил и что они не пустые.
 DATA_FILES = ["app_icon.ico", "app_icon.png"]
 
-print(f"Smoke test: проверка {len(CHECKED)} импортов, "
+print(f"Smoke test: проверка {len(APP_MODULES)} импортов, "
       f"{len(DATA_FILES)} ресурсов\n")
 
-for label, obj in CHECKED:
+for label, obj in APP_MODULES:
     if obj is None:
         print(f"FAIL  import  {label}: модуль импортирован как None")
         failures.append(f"{label}: импортирован как None")
@@ -117,6 +128,15 @@ if n_scen == 0:
           "но данных нет")
     failures.append("RATE_SCENARIOS пуст")
 
+# Проверяем, что схема результатов совпадает с тем, что ожидает интерфейс:
+# рассинхрон здесь означает пустую или разъехавшуюся таблицу в GUI.
+n_columns = len(result_schema.COLUMN_KEYS)
+print(f"      колонок результата: {n_columns}, "
+      f"сортировка по: {result_schema.YIELD_COLUMN}")
+if n_columns == 0:
+    print("FAIL  schema  result_schema пуст — GUI построит таблицу без столбцов")
+    failures.append("result_schema пуст")
+
 # Проверяем, что у GUI-класса есть точка входа, которую зовёт run_gui.py:
 # если её нет, релизная сборка стартует и сразу падает.
 if not callable(getattr(gui_app, "run_gui", None)):
@@ -125,8 +145,12 @@ if not callable(getattr(gui_app, "run_gui", None)):
 elif not callable(getattr(run_gui, "main", None)):
     print("FAIL  entry   run_gui: нет вызываемой main()")
     failures.append("run_gui: нет main()")
+elif not callable(getattr(main, "main", None)):
+    print("FAIL  entry   main: нет вызываемой main()")
+    failures.append("main: нет main()")
 else:
-    print("OK    entry   точка входа run_gui.main() -> ui.gui_app.run_gui()")
+    print("OK    entry   точки входа: main.main() / run_gui.main() -> "
+          "ui.gui_app.run_gui()")
 
 # Где искать ресурсы: в замороженном бандле — каталог _MEIPASS.
 if getattr(sys, "frozen", False):

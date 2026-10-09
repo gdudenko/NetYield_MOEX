@@ -17,11 +17,34 @@
 """
 
 import logging
-import traceback
-from typing import Optional, Any
+from typing import Any, Optional
+
 from logger import get_logger
 
 logger = get_logger(__name__)
+
+PREVIEW_LIMIT = 500
+
+
+def _build_extra_data(**fields: Any) -> dict:
+    """Собирает словарь доп. данных, выкидывая пустые значения.
+
+    Пустые поля в лог не пишем: запись «response_status: None» только
+    шумит и мешает читать лог. Сами специализированные логгеры сводятся
+    к общему log_error через этот хелпер.
+    """
+    return {
+        key: value
+        for key, value in fields.items()
+        if value is not None and value != '' and value != {}
+    }
+
+
+def _trim_preview(text: Optional[str]) -> Optional[str]:
+    """Обрезает длинный ответ API, чтобы лог не разрастался."""
+    if not text:
+        return None
+    return text[:PREVIEW_LIMIT]
 
 
 def log_error(
@@ -76,21 +99,17 @@ def log_network_error(
         url: URL, к которому был запрос.
         context: Описание операции.
         response_status: HTTP статус ответа (если есть).
-        response_content: Содержимое ответа (первые 500 символов).
+        response_content: Содержимое ответа (обрезается до 500 символов).
     """
-    extra_data = {}
-
-    if url:
-        extra_data['url'] = url
-
-    if response_status is not None:
-        extra_data['status_code'] = response_status
-
-    if response_content:
-        # Обрезаем длинные ответы
-        extra_data['response_preview'] = response_content[:500]
-
-    log_error(error, context=context, extra_data=extra_data)
+    log_error(
+        error,
+        context=context,
+        extra_data=_build_extra_data(
+            url=url,
+            status_code=response_status,
+            response_preview=_trim_preview(response_content),
+        ),
+    )
 
 
 def log_parse_error(
@@ -108,15 +127,14 @@ def log_parse_error(
         data_preview: Превью данных, которые не удалось распарсить.
         context: Описание операции.
     """
-    extra_data = {}
-
-    if data_source:
-        extra_data['source'] = data_source
-
-    if data_preview:
-        extra_data['data_preview'] = data_preview[:500]
-
-    log_error(error, context=context, extra_data=extra_data)
+    log_error(
+        error,
+        context=context,
+        extra_data=_build_extra_data(
+            source=data_source,
+            data_preview=_trim_preview(data_preview),
+        ),
+    )
 
 
 def log_calculation_error(
@@ -136,15 +154,12 @@ def log_calculation_error(
         input_data: Входные данные расчёта.
         context: Описание операции.
     """
-    extra_data = {}
-
-    if bond_id:
-        extra_data['bond_id'] = bond_id
-
-    if calculation_type:
-        extra_data['calculation_type'] = calculation_type
-
-    if input_data:
-        extra_data['input_data'] = input_data
-
-    log_error(error, context=context, extra_data=extra_data)
+    log_error(
+        error,
+        context=context,
+        extra_data=_build_extra_data(
+            bond_id=bond_id,
+            calculation_type=calculation_type,
+            input_data=input_data,
+        ),
+    )

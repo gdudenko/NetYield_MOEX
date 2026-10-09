@@ -3,129 +3,132 @@
 """
 
 import re
-import requests
 import xml.etree.ElementTree as ET
+
+from error_handler import log_parse_error
 from logger import get_logger
-from error_handler import log_network_error, log_parse_error
+from services.http import request_with_logging
 
 logger = get_logger(__name__)
 
+CBR_URL = 'http://www.cbr.ru/DailyInfoWebServ/DailyInfo.asmx'
+DATA_SOURCE = 'ЦБ РФ SOAP API'
 
-def get_cbr_key_rate(fallback_rate: float = 16.0) -> float:
-    """Получает актуальную ключевую ставку ЦБ РФ через SOAP API."""
-    url = "http://www.cbr.ru/DailyInfoWebServ/DailyInfo.asmx"
-
-    soap_body = """<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
-               xmlns:xsd="http://www.w3.org/2001/XMLSchema" 
+SOAP_BODY = """<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xmlns:xsd="http://www.w3.org/2001/XMLSchema"
                xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
     <MainInfoXML xmlns="http://web.cbr.ru/" />
   </soap:Body>
 </soap:Envelope>"""
 
-    headers = {
-        'Content-Type': 'text/xml; charset=utf-8',
-        'SOAPAction': 'http://web.cbr.ru/MainInfoXML',
-    }
+HEADERS = {
+    'Content-Type': 'text/xml; charset=utf-8',
+    'SOAPAction': 'http://web.cbr.ru/MainInfoXML',
+}
 
+KEY_RATE_PATTERNS = (
+    r'<[^:]*:?keyRate[^>]*>\s*(\d{1,2}[.,]\d{2})\s*<',
+    r'<[^:]*:?KeyRate[^>]*>\s*(\d{1,2}[.,]\d{2})\s*<',
+)
+
+
+def _use_fallback(fallback_rate: float) -> float:
+    """Резервная ставка с предупреждением в лог."""
+    logger.warning(f"Использую резервное значение: {fallback_rate}%")
+    return fallback_rate
+
+
+def _parse_with_elementtree(raw: bytes, content: str) -> float | None:
+    """Стратегия 1: разбор XML стандартной библиотекой."""
     try:
-        logger.info("Запрашиваю ключевую ставку ЦБ РФ через SOAP API...")
-        response = requests.post(
-            url, data=soap_body, headers=headers, timeout=15
+        root = ET.fromstring(raw)
+    except ET.ParseError as e:
+        log_parse_error(
+            e,
+            data_source=DATA_SOURCE,
+            data_preview=content[:500],
+            context="Парсинг XML ответа от ЦБ РФ",
         )
-        response.raise_for_status()
+        return None
 
-        content = response.content.decode('utf-8', errors='replace')
-        logger.debug(f"Получен ответ от ЦБ РФ, статус: {response.status_code}")
+    for elem in root.iter():
+        if elem.tag.split('}')[-1].lower() != 'keyrate' or not elem.text:
+            continue
 
-        # Стратегия 1: ElementTree
+        rate_date = elem.get('Date', 'неизвестно')
         try:
-            root = ET.fromstring(response.content)
-
-            for elem in root.iter():
-                local_name = elem.tag.split('}')[-1].lower()
-
-                if local_name == 'keyrate' and elem.text:
-                    try:
-                        rate_str = elem.text.strip().replace(',', '.')
-                        key_rate = float(rate_str)
-                        rate_date = elem.get('Date', 'неизвестно')
-                        logger.info(
-                            f"✅ Ключевая ставка ЦБ РФ: {key_rate}% (от {rate_date})"
-                        )
-                        return key_rate
-                    except (ValueError, TypeError) as e:
-                        log_parse_error(
-                            e,
-                            data_source="ЦБ РФ SOAP API",
-                            data_preview=content[:300],
-                            context="Преобразование ставки из текста в число",
-                        )
-
-        except ET.ParseError as e:
+            key_rate = float(elem.text.strip().replace(',', '.'))
+        except (ValueError, TypeError) as e:
             log_parse_error(
                 e,
-                data_source="ЦБ РФ SOAP API",
-                data_preview=content[:500],
-                context="Парсинг XML ответа от ЦБ РФ",
+                data_source=DATA_SOURCE,
+                data_preview=content[:300],
+                context="Преобразование ставки из текста в число",
             )
+            continue
 
-        # Стратегия 2: Регулярные выражения
-        patterns = [
-            r'<[^:]*:?keyRate[^>]*>\s*(\d{1,2}[.,]\d{2})\s*<',
-            r'<[^:]*:?KeyRate[^>]*>\s*(\d{1,2}[.,]\d{2})\s*<',
-        ]
+        logger.info(f"✅ Ключевая ставка ЦБ РФ: {key_rate}% (от {rate_date})")
+        return key_rate
 
-        for i, pattern in enumerate(patterns, 1):
-            match = re.search(pattern, content, re.IGNORECASE)
-            if match:
-                rate_str = match.group(1).replace(',', '.')
-                try:
-                    key_rate = float(rate_str)
-                    logger.info(
-                        f"✅ Ключевая ставка ЦБ РФ (regex): {key_rate}%"
-                    )
-                    return key_rate
-                except ValueError as e:
-                    log_parse_error(
-                        e,
-                        data_source="ЦБ РФ SOAP API",
-                        data_preview=match.group(0),
-                        context=f"Преобразование ставки из regex паттерна {i}",
-                    )
+    return None
 
-        # Ничего не нашли
+
+def _parse_with_regex(content: str) -> float | None:
+    """Стратегия 2: регулярные выражения, если XML не разобрался."""
+    for i, pattern in enumerate(KEY_RATE_PATTERNS, 1):
+        match = re.search(pattern, content, re.IGNORECASE)
+        if not match:
+            continue
+
+        try:
+            key_rate = float(match.group(1).replace(',', '.'))
+        except ValueError as e:
+            log_parse_error(
+                e,
+                data_source=DATA_SOURCE,
+                data_preview=match.group(0),
+                context=f"Преобразование ставки из regex паттерна {i}",
+            )
+            continue
+
+        logger.info(f"✅ Ключевая ставка ЦБ РФ (regex): {key_rate}%")
+        return key_rate
+
+    return None
+
+
+def get_cbr_key_rate(fallback_rate: float = 16.0) -> float:
+    """Получает актуальную ключевую ставку ЦБ РФ через SOAP API.
+
+    Args:
+        fallback_rate: Ставка, если сервис недоступен или ответ не разобран.
+
+    Returns:
+        Ключевая ставка в процентах.
+    """
+    logger.info("Запрашиваю ключевую ставку ЦБ РФ через SOAP API...")
+
+    response = request_with_logging(
+        'POST',
+        CBR_URL,
+        context="Запрос ключевой ставки ЦБ РФ",
+        data=SOAP_BODY,
+        headers=HEADERS,
+        timeout=15,
+    )
+    if response is None:
+        return _use_fallback(fallback_rate)
+
+    content = response.content.decode('utf-8', errors='replace')
+
+    key_rate = _parse_with_elementtree(response.content, content)
+    if key_rate is None:
+        key_rate = _parse_with_regex(content)
+
+    if key_rate is None:
         logger.warning("Не удалось найти ключевую ставку в ответе ЦБ.")
-        logger.warning(f"Использую резервное значение: {fallback_rate}%")
-        return fallback_rate
+        return _use_fallback(fallback_rate)
 
-    except requests.exceptions.RequestException as e:
-        log_network_error(
-            e,
-            url=url,
-            context="Запрос ключевой ставки ЦБ РФ",
-            response_status=(
-                getattr(e.response, 'status_code', None)
-                if hasattr(e, 'response')
-                else None
-            ),
-            response_content=(
-                getattr(e.response, 'text', None)
-                if hasattr(e, 'response')
-                else None
-            ),
-        )
-        logger.warning(f"Использую резервное значение: {fallback_rate}%")
-        return fallback_rate
-
-    except Exception as e:
-        from error_handler import log_error
-
-        log_error(
-            e,
-            context="Неожиданная ошибка при получении ставки ЦБ",
-            include_stack=True,
-        )
-        logger.warning(f"Использую резервное значение: {fallback_rate}%")
-        return fallback_rate
+    return key_rate

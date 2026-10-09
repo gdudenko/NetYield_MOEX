@@ -3,7 +3,25 @@
 """
 
 import pandas as pd
+
 import app_config as config
+
+UNKNOWN = 'unknown'
+
+# Значения COUPON_DETAILS → класс купона. Строится из настроек один раз,
+# чтобы новый тип в app_config не требал правок здесь.
+COUPON_CLASS_BY_DETAIL: dict[str, str] = {
+    **{detail: 'floater' for detail in config.FLOATER_COUPON_TYPES},
+    **{detail: 'variable' for detail in config.VARIABLE_COUPON_TYPES},
+    **{detail: 'fixed' for detail in config.FIXED_COUPON_TYPES},
+}
+
+COUPON_LABELS = {
+    'floater': 'Флоатер',
+    'variable': 'Переменный',
+    'fixed': 'Фиксированный',
+    UNKNOWN: 'Неизвестно',
+}
 
 
 def classify_coupon_type(coupon_details) -> str:
@@ -17,29 +35,14 @@ def classify_coupon_type(coupon_details) -> str:
         'floater' | 'variable' | 'fixed' | 'unknown'
     """
     if pd.isna(coupon_details) or coupon_details is None:
-        return 'unknown'
+        return UNKNOWN
 
-    coupon_details = str(coupon_details)
-
-    if coupon_details in config.FLOATER_COUPON_TYPES:
-        return 'floater'
-    elif coupon_details in config.VARIABLE_COUPON_TYPES:
-        return 'variable'
-    elif coupon_details in config.FIXED_COUPON_TYPES:
-        return 'fixed'
-    else:
-        return 'unknown'
+    return COUPON_CLASS_BY_DETAIL.get(str(coupon_details), UNKNOWN)
 
 
 def get_coupon_label(coupon_class: str) -> str:
     """Возвращает человекочитаемое название типа купона."""
-    labels = {
-        'floater': 'Флоатер',
-        'variable': 'Переменный',
-        'fixed': 'Фиксированный',
-        'unknown': 'Неизвестно',
-    }
-    return labels.get(coupon_class, 'Неизвестно')
+    return COUPON_LABELS.get(coupon_class, COUPON_LABELS[UNKNOWN])
 
 
 def apply_coupon_classification(df: pd.DataFrame) -> pd.DataFrame:

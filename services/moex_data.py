@@ -2,121 +2,127 @@
 Получение данных по облигациям с Московской биржи (MOEX ISS API).
 """
 
-import requests
+# pandas-стабы не знают, что df['COLUMN'] — это Series, и ругаются на
+# любой вызов метода у результата индексации. Данные приходят из API с
+# заранее известной структурой, типы здесь не проверяются.
+# pyright: reportAttributeAccessIssue=false, reportReturnType=false
+# pyright: reportAssignmentType=false
+
 import pandas as pd
+
 import app_config as config
+from error_handler import log_parse_error
 from logger import get_logger
-from error_handler import log_network_error, log_parse_error
+from services.http import request_with_logging
 
 logger = get_logger(__name__)
 
+DATA_SOURCE = 'MOEX ISS API'
+
+SECTIONS = ('securities', 'marketdata')
+YIELDS_SECTION = 'marketdata_yields'
+
+
+def _sections_to_frames(data: dict) -> tuple[pd.DataFrame, ...]:
+    """Собирает DataFrame из секций ответа ISS.
+
+    Raises:
+        KeyError, TypeError: Секции или их формат не совпали с ожиданием.
+    """
+    return tuple(
+        pd.DataFrame(data[name]['data'], columns=data[name]['columns'])
+        for name in SECTIONS
+    )
+
+
+def _fetch_sections(response_data: dict) -> tuple[pd.DataFrame, ...]:
+    """Секции securities и marketdata с проверкой формата."""
+    try:
+        return _sections_to_frames(response_data)
+    except (KeyError, TypeError) as e:
+        log_parse_error(
+            e,
+            data_source=DATA_SOURCE,
+            data_preview=str(response_data)[:500],
+            context="Извлечение данных из JSON ответа",
+        )
+        raise
+
+
+def _fetch_yields(response_data: dict) -> pd.DataFrame:
+    """Секция доходностей marketdata_yields, если сервер её прислал."""
+    block = response_data.get(YIELDS_SECTION) or {}
+    return pd.DataFrame(block.get('data', []), columns=block.get('columns', []))
+
+
+def _merge_sections(
+    df_sec: pd.DataFrame,
+    df_market: pd.DataFrame,
+    df_yields: pd.DataFrame,
+) -> pd.DataFrame:
+    """Склеивает секции по SECID, убирая дубликаты рыночных данных."""
+    duplicates_market = df_market.duplicated(subset=['SECID']).sum()
+    if duplicates_market > 0:
+        logger.debug(f"Удалено дубликатов в marketdata: {duplicates_market}")
+
+    df_market = df_market.drop_duplicates(subset=['SECID'], keep='first')
+    df = pd.merge(df_sec, df_market, on='SECID', how='inner')
+
+    if not df_yields.empty:
+        df_yields = df_yields.drop_duplicates(subset=['SECID'], keep='first')
+        df_yields = df_yields.rename(
+            columns={
+                'DURATION': 'DURATION_YIELDS',
+                'EFFECTIVEYIELD': 'EFFECTIVE_YIELD',
+            }
+        )
+        df = pd.merge(df, df_yields, on='SECID', how='left')
+
+    return df
+
 
 def fetch_moex_data() -> pd.DataFrame | None:
-    """Запрашивает данные по облигациям с Московской биржи."""
+    """Запрашивает данные по облигациям с Московской биржи.
+
+    Returns:
+        DataFrame с сырыми полями ISS API или None при любой ошибке.
+    """
     logger.info("Запрашиваю данные с Московской биржи...")
 
+    response = request_with_logging(
+        'GET',
+        config.MOEX_API_URL,
+        context="Запрос данных с Московской биржи",
+        params=config.API_PARAMS,
+        timeout=30,
+    )
+    if response is None:
+        return None
+
     try:
-        response = requests.get(
-            config.MOEX_API_URL, params=config.API_PARAMS, timeout=30
-        )
-        response.raise_for_status()
-
-        try:
-            data = response.json()
-        except ValueError as e:
-            log_parse_error(
-                e,
-                data_source="MOEX ISS API",
-                data_preview=response.text[:500],
-                context="Парсинг JSON ответа от Мосбиржи",
-            )
-            return None
-
-        logger.debug(
-            f"Получен ответ от Мосбиржи, статус: {response.status_code}"
-        )
-
-        try:
-            df_sec = pd.DataFrame(
-                data['securities']['data'],
-                columns=data['securities']['columns'],
-            )
-            df_market = pd.DataFrame(
-                data['marketdata']['data'],
-                columns=data['marketdata']['columns'],
-            )
-
-            df_yields = pd.DataFrame(
-                data.get('marketdata_yields', {}).get('data', []),
-                columns=data.get('marketdata_yields', {}).get('columns', []),
-            )
-        except (KeyError, TypeError) as e:
-            log_parse_error(
-                e,
-                data_source="MOEX ISS API",
-                data_preview=str(data)[:500],
-                context="Извлечение данных из JSON ответа",
-            )
-            return None
-
-        duplicates_market = df_market.duplicated(subset=['SECID']).sum()
-        if duplicates_market > 0:
-            logger.debug(
-                f"Удалено дубликатов в marketdata: {duplicates_market}"
-            )
-
-        df_market = df_market.drop_duplicates(subset=['SECID'], keep='first')
-
-        if not df_yields.empty:
-            df_yields = df_yields.drop_duplicates(
-                subset=['SECID'], keep='first'
-            )
-
-        df = pd.merge(df_sec, df_market, on='SECID', how='inner')
-
-        if not df_yields.empty:
-            df_yields = df_yields.rename(
-                columns={
-                    'DURATION': 'DURATION_YIELDS',
-                    'EFFECTIVEYIELD': 'EFFECTIVE_YIELD',
-                }
-            )
-            df = pd.merge(df, df_yields, on='SECID', how='left')
-
-        logger.info(f"Загружено облигаций: {len(df)}")
-        return df
-
-    except requests.exceptions.RequestException as e:
-        log_network_error(
+        data = response.json()
+    except ValueError as e:
+        log_parse_error(
             e,
-            url=config.MOEX_API_URL,
-            context="Запрос данных с Московской биржи",
-            response_status=(
-                getattr(e.response, 'status_code', None)
-                if hasattr(e, 'response')
-                else None
-            ),
-            response_content=(
-                getattr(e.response, 'text', None)
-                if hasattr(e, 'response')
-                else None
-            ),
+            data_source=DATA_SOURCE,
+            data_preview=response.text[:500],
+            context="Парсинг JSON ответа от Мосбиржи",
         )
         return None
 
-    except Exception as e:
-        from error_handler import log_error
-
-        log_error(
-            e,
-            context="Неожиданная ошибка при загрузке данных с Мосбиржи",
-            include_stack=True,
-        )
+    try:
+        df_sec, df_market = _fetch_sections(data)
+        df_yields = _fetch_yields(data)
+        df = _merge_sections(df_sec, df_market, df_yields)
+    except (KeyError, TypeError):
         return None
+
+    logger.info(f"Загружено облигаций: {len(df)}")
+    return df
 
 
 def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
-    """Подготавливает данные: очищает, приводит типы, добавляет производные поля."""
+    """Готовит данные: чистит, приводит типы, добавляет производные поля."""
     initial_count = len(df)
 
     df['PRICE_PCT'] = df['LAST'].fillna(df['LCLOSEPRICE'])
@@ -126,29 +132,26 @@ def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
     if dropped > 0:
         logger.debug(f"Отсеяно бумаг без цены: {dropped}")
 
-    df['NUMTRADES'] = pd.to_numeric(df['NUMTRADES'], errors='coerce').fillna(0)
-    df['VALUE'] = pd.to_numeric(df['VALUE'], errors='coerce').fillna(0)
+    for column in ('NUMTRADES', 'VALUE'):
+        df[column] = pd.to_numeric(df[column], errors='coerce').fillna(0)
 
-    df['OFFERDATE'] = pd.to_datetime(df['OFFERDATE'], errors='coerce')
-    df['MATDATE'] = pd.to_datetime(df['MATDATE'], errors='coerce')
+    for column in ('OFFERDATE', 'MATDATE'):
+        df[column] = pd.to_datetime(df[column], errors='coerce')
 
+    # Дюрация приходит и в marketdata, и в marketdata_yields; поля называются
+    # по-разному, приоритет у блока доходностей.
+    source = df['DURATION']
     if 'DURATION_YIELDS' in df.columns:
-        df['DURATION_DAYS'] = df['DURATION_YIELDS'].fillna(df['DURATION'])
-    else:
-        df['DURATION_DAYS'] = df['DURATION']
-
-    df['DURATION_DAYS'] = pd.to_numeric(
-        df['DURATION_DAYS'], errors='coerce'
-    ).fillna(0)
+        source = df['DURATION_YIELDS'].fillna(source)
+    df['DURATION_DAYS'] = pd.to_numeric(source, errors='coerce').fillna(0)
 
     df['IS_OFZ'] = df['BONDTYPE'].str.contains('OFZ', na=False) | df[
         'SECID'
     ].str.startswith('SU')
 
-    ofz_count = df['IS_OFZ'].sum()
-    corp_count = len(df) - ofz_count
     logger.debug(
-        f"Подготовка завершена: ОФЗ={ofz_count}, Корпоративные={corp_count}"
+        f"Подготовка завершена: ОФЗ={df['IS_OFZ'].sum()}, "
+        f"Корпоративные={len(df) - df['IS_OFZ'].sum()}"
     )
 
     return df

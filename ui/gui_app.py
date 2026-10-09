@@ -8,31 +8,26 @@ GUI-интерфейс для NetYield MOEX на основе CustomTkinter.
 - Прогресс-бар при загрузке данных
 - Экспорт в CSV
 - Копирование строки в буфер обмена
+
+Расчёты живут в analysis.pipeline — здесь только интерфейс.
 """
 
 import customtkinter as ctk
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from datetime import date, timedelta
+from threading import Thread
+from tkinter import filedialog, messagebox, ttk
 from tkcalendar import DateEntry
-import pandas as pd
-from datetime import date, datetime, timedelta
-import threading
+import os
 import traceback
 
+import pandas as pd
+
 import app_config as config
+from analysis.pipeline import AnalysisError, run_analysis
+from analysis.result_schema import RESULT_COLUMNS
 from logger import get_logger
 from services.cbr_rate import get_cbr_key_rate
-from services.moex_data import fetch_moex_data, prepare_data
-from analysis.classification import (
-    apply_coupon_classification,
-    get_coupon_label,
-)
-from analysis.filters import apply_all_filters
-from analysis.yield_calculator import (
-    calculate_maturity_scenario,
-    calculate_sale_scenario,
-    process_coupon,
-)
 
 logger = get_logger(__name__)
 
@@ -42,6 +37,16 @@ logger = get_logger(__name__)
 # ============================================================
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
+
+# Цвета таблицы. Дублируют значения из _create_date_entry — держать вместе.
+BG = "#2b2b2b"
+FG = "#e0e0e0"
+ACCENT = "#1f6aa5"
+ACCENT_ACTIVE = "#1a5a8a"
+TEXT_DIM = "#707070"
+TEXT_WARN = "#e08080"
+
+SEARCH_COLUMNS = ("Тикер", "Эмитент")
 
 
 # ============================================================
@@ -59,10 +64,9 @@ class NetYieldApp(ctk.CTk):
         self.minsize(1200, 700)
 
         # Состояние приложения
-        self.cbr_rate = 16.0
-        self.df_results: pd.DataFrame | None = None
-        self.df_filtered: pd.DataFrame | None = None
-        self.current_scenario_key = "2"
+        self.cbr_rate = config.FLOATING_COUPON_RATE
+        self.df_results = None
+        self.df_filtered = None
         self.sort_column = None
         self.sort_reverse = False
 
@@ -120,19 +124,19 @@ class NetYieldApp(ctk.CTk):
         kwargs = dict(
             master=master,
             date_pattern="dd.mm.yyyy",
-            background="#1f6aa5",
+            background=ACCENT,
             foreground="white",
-            fieldbackground="#2b2b2b",
-            selectbackground="#1f6aa5",
+            fieldbackground=BG,
+            selectbackground=ACCENT,
             selectforeground="white",
-            normalbackground="#2b2b2b",
+            normalbackground=BG,
             normalforeground="white",
-            weekendbackground="#2b2b2b",
-            weekendforeground="#e08080",
-            othermonthforeground="#707070",
-            titlebackground="#1f6aa5",
+            weekendbackground=BG,
+            weekendforeground=TEXT_WARN,
+            othermonthforeground=TEXT_DIM,
+            titlebackground=ACCENT,
             titleforeground="white",
-            headerbackground="#2b2b2b",
+            headerbackground=BG,
             headerforeground="white",
             font=("Segoe UI", 11),
         )
@@ -277,51 +281,47 @@ class NetYieldApp(ctk.CTk):
         self.progress = ctk.CTkProgressBar(panel, mode="indeterminate")
         self.progress.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 10))
 
-    def _build_treeview(self, parent):
-        """Создаёт Treeview с кастомной сортировкой."""
+    def _setup_treeview_style(self):
+        """Настраивает вид Treeview под тёмную тему."""
         style = ttk.Style()
         style.theme_use("clam")
 
-        # Настраиваем стиль под тёмную тему
-        bg_color = "#2b2b2b"
-        fg_color = "#e0e0e0"
-        header_bg = "#1f6aa5"
-        header_fg = "white"
-        selected_bg = "#1f6aa5"
-        selected_fg = "white"
-        row_even = "#2b2b2b"
-        row_odd = "#333333"
-
         style.configure(
             "Treeview",
-            background=bg_color,
-            foreground=fg_color,
-            fieldbackground=bg_color,
+            background=BG,
+            foreground=FG,
+            fieldbackground=BG,
             rowheight=28,
             font=("Segoe UI", 10),
         )
         style.configure(
             "Treeview.Heading",
-            background=header_bg,
-            foreground=header_fg,
+            background=ACCENT,
+            foreground="white",
             font=("Segoe UI", 10, "bold"),
             relief="flat",
         )
         style.map(
             "Treeview",
-            background=[("selected", selected_bg)],
-            foreground=[("selected", selected_fg)],
+            background=[("selected", ACCENT)],
+            foreground=[("selected", "white")],
         )
         style.map(
             "Treeview.Heading",
-            background=[("active", "#1a5a8a")],
+            background=[("active", ACCENT_ACTIVE)],
         )
 
-        # Чередование строк
-        style.configure("Treeview", rowheight=28)
+    def _build_treeview(self, parent):
+        """Создаёт Treeview с кастомной сортировкой.
 
-        # Контейнер с прокруткой
-        tree_container = tk.Frame(parent, bg=bg_color)
+        Состав столбцов берётся из analysis.result_schema — там же живут
+        подписи и ширины, поэтому рассинхрона с расчётом быть не может.
+        """
+        self._setup_treeview_style()
+        self.column_defs = {col.key: col for col in RESULT_COLUMNS}
+
+        # Контейнер со скроллбарами
+        tree_container = tk.Frame(parent, bg=BG)
         tree_container.grid(row=0, column=0, sticky="nsew")
         tree_container.grid_columnconfigure(0, weight=1)
         tree_container.grid_rowconfigure(0, weight=1)
@@ -329,60 +329,21 @@ class NetYieldApp(ctk.CTk):
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(0, weight=1)
 
-        # Столбцы таблицы
-        columns = (
-            "secid",
-            "type",
-            "issuer",
-            "coupon_type",
-            "price",
-            "coupon",
-            "maturity",
-            "offer",
-            "status",
-            "days",
-            "trades",
-            "turnover",
-            "net_income",
-            "period_yield",
-            "annual_yield",
-        )
-
         self.tree = ttk.Treeview(
             tree_container,
-            columns=columns,
+            columns=list(self.column_defs),
             show="headings",
             selectmode="browse",
         )
 
-        # Заголовки столбцов
-        headings = {
-            "secid": ("Тикер", 120),
-            "type": ("Тип", 80),
-            "issuer": ("Эмитент", 150),
-            "coupon_type": ("Тип купона", 120),
-            "price": ("Цена (%)", 90),
-            "coupon": ("Купон (%)", 90),
-            "maturity": ("Погашение", 100),
-            "offer": ("Оферта", 100),
-            "status": ("Статус", 100),
-            "days": ("Дней", 60),
-            "trades": ("Сделок", 70),
-            "turnover": ("Оборот (тыс)", 100),
-            "net_income": ("Чист. доход (₽)", 120),
-            "period_yield": ("Доход. за период (%)", 150),
-            "annual_yield": ("Годовая доход. (%)", 150),
-        }
-
-        for col, (title, width) in headings.items():
+        for key, col in self.column_defs.items():
             self.tree.heading(
-                col,
-                text=title,
-                command=lambda c=col: self._sort_by_column(c),
+                key,
+                text=key,
+                command=lambda c=key: self._sort_by_column(c),
             )
-            self.tree.column(col, width=width, anchor="w")
+            self.tree.column(key, width=col.width, anchor="w")
 
-        # Скроллбары
         vsb = ttk.Scrollbar(
             tree_container, orient="vertical", command=self.tree.yview
         )
@@ -413,60 +374,68 @@ class NetYieldApp(ctk.CTk):
         self.status_label.grid(row=0, column=0, sticky="ew", padx=15, pady=5)
 
     # --------------------------------------------------------
-    # Загрузка ставки ЦБ
+    # Потоки и расчёт
     # --------------------------------------------------------
+    def _run_in_background(self, work, on_error):
+        """Выполняет work() вне GUI-потока, результат отдаёт в GUI-поток.
+
+        Args:
+            work: Функция без аргументов. Выполняется в фоне и возвращает
+                функцию, которую надо вызвать в GUI-потоке (или None).
+            on_error: Обработчик исключения, получает текст ошибки.
+        """
+
+        def wrapper():
+            try:
+                action = work()
+                if action is not None:
+                    self.after(0, action)
+            except AnalysisError as e:
+                # Ошибка данных: показываем текст как есть, без трейсбека
+                logger.warning(f"Анализ не выполнен: {e}")
+                self.after(0, lambda: on_error(str(e)))
+            except Exception as e:
+                logger.error(
+                    f"Ошибка в фоновом потоке: {e}\n{traceback.format_exc()}"
+                )
+                self.after(0, lambda: on_error(str(e)))
+
+        Thread(target=wrapper, daemon=True).start()
+
     def _load_cbr_rate_async(self):
         """Загружает ставку ЦБ в фоновом потоке."""
         self.status_label.configure(
             text="⏳ Загрузка ключевой ставки ЦБ РФ..."
         )
 
-        def task():
-            try:
-                rate = get_cbr_key_rate(
-                    fallback_rate=config.FLOATING_COUPON_RATE
-                )
-                self.cbr_rate = rate
-                self.after(
-                    0,
-                    lambda: self.status_label.configure(
-                        text=f"✅ Ключевая ставка ЦБ РФ: {rate}%"
-                    ),
-                )
-            except Exception as e:
-                logger.error(f"Ошибка при загрузке ставки ЦБ: {e}")
-                self.after(
-                    0,
-                    lambda: self.status_label.configure(
-                        text=f"⚠️ Не удалось загрузить ставку ЦБ. Используется: {self.cbr_rate}%"
-                    ),
-                )
+        def fetch_rate():
+            self.cbr_rate = get_cbr_key_rate(
+                fallback_rate=config.FLOATING_COUPON_RATE
+            )
+            return lambda: self._show_cbr_rate(self.cbr_rate)
 
-        threading.Thread(target=task, daemon=True).start()
+        self._run_in_background(fetch_rate, self._show_cbr_rate_error)
 
-    # --------------------------------------------------------
-    # Основной расчёт
-    # --------------------------------------------------------
+    def _show_cbr_rate(self, rate: float):
+        """Показывает загруженную ставку в статус-баре."""
+        self.status_label.configure(text=f"✅ Ключевая ставка ЦБ РФ: {rate}%")
+
+    def _show_cbr_rate_error(self, message: str):
+        """Ставка не загрузилась — предупреждаем и работаем с резервной."""
+        logger.debug(f"Ставка ЦБ не загружена: {message}")
+        self.status_label.configure(
+            text=(
+                f"⚠️ Не удалось загрузить ставку ЦБ. "
+                f"Используется: {self.cbr_rate}%"
+            )
+        )
+
     def _on_calculate(self):
         """Запускает расчёт в фоновом потоке."""
-        # Читаем даты напрямую из календарей
-        try:
-            buy_date = self.buy_date_entry.get_date()
-            sell_date = self.sell_date_entry.get_date()
-
-            if sell_date <= buy_date:
-                messagebox.showerror(
-                    "Ошибка",
-                    "Дата продажи должна быть позже даты покупки!",
-                )
-                return
-
-        except Exception as e:
-            messagebox.showerror(
-                "Ошибка",
-                f"Не удалось прочитать даты.\n{e}",
-            )
+        dates = self._read_dates()
+        if dates is None:
             return
+        buy_date, sell_date = dates
 
         scenario_key = self.scenario_var.get()
 
@@ -475,182 +444,71 @@ class NetYieldApp(ctk.CTk):
         self.progress.start()
         self.status_label.configure(text="🔄 Загрузка данных с Мосбиржи...")
 
-        def task():
-            try:
-                df = self._run_analysis(buy_date, sell_date, scenario_key)
-                self.after(0, lambda: self._show_results(df, scenario_key))
-            except Exception as e:
-                logger.error(
-                    f"Ошибка при расчёте: {e}\n{traceback.format_exc()}"
-                )
-                self.after(
-                    0,
-                    lambda: messagebox.showerror(
-                        "Ошибка расчёта",
-                        f"{e}\n\nПодробности в логе net_yield.log",
-                    ),
-                )
-            finally:
-                self.after(0, self._finish_calculation)
+        def calculate():
+            df = run_analysis(
+                buy_date, sell_date, scenario_key, self.cbr_rate
+            )
+            return lambda: self._show_results(df, scenario_key)
 
-        threading.Thread(target=task, daemon=True).start()
+        self._run_in_background(calculate, self._show_calculation_error)
+
+    def _read_dates(self) -> tuple[date, date] | None:
+        """Читает даты из календарей. None — ввод неверный, не считаем."""
+        try:
+            buy_date = self.buy_date_entry.get_date()
+            sell_date = self.sell_date_entry.get_date()
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось прочитать даты.\n{e}")
+            return None
+
+        if sell_date <= buy_date:
+            messagebox.showerror(
+                "Ошибка",
+                "Дата продажи должна быть позже даты покупки!",
+            )
+            return None
+
+        return buy_date, sell_date
+
+    def _show_calculation_error(self, message: str):
+        """Показывает ошибку расчёта и восстанавливает UI."""
+        self._finish_calculation()
+        messagebox.showerror(
+            "Ошибка расчёта",
+            f"{message}\n\nПодробности в логе {os.path.basename(config.LOG_FILE)}",
+        )
 
     def _finish_calculation(self):
         """Завершает расчёт — восстанавливает UI."""
         self.progress.stop()
         self.calc_button.configure(state="normal", text="🚀 Рассчитать")
 
-    def _run_analysis(
-        self, buy_date, sell_date, scenario_key: str
-    ) -> pd.DataFrame:
-        """Выполняет полный цикл анализа."""
-        # Загрузка данных
-        df = fetch_moex_data()
-        if df is None or df.empty:
-            raise RuntimeError("Не удалось получить данные с Мосбиржи")
-
-        # Подготовка
-        df = prepare_data(df)
-        df = apply_coupon_classification(df)
-
-        # Фильтрация
-        buy_ts = pd.Timestamp(buy_date)
-        sell_ts = pd.Timestamp(sell_date)
-        df = apply_all_filters(df, buy_ts, sell_ts)
-
-        if df.empty:
-            raise RuntimeError("По заданным фильтрам бумаги не найдены")
-
-        # Параметры сценария
-        holding_days = (sell_date - buy_date).days
-        scenario = config.RATE_SCENARIOS[scenario_key]
-        rate_change = scenario["rate_change"]
-
-        # Расчёт
-        results = []
-        for _, row in df.iterrows():
-            try:
-                facevalue = row["FACEVALUE"]
-                current_price = row["PRICE_PCT"]
-                is_ofz = row["IS_OFZ"]
-                mat_date = row["MATDATE"]
-                secid = row["SECID"]
-                coupon_class = row["COUPON_CLASS"]
-                duration_days = row["DURATION_DAYS"]
-
-                if (
-                    pd.isna(current_price)
-                    or pd.isna(facevalue)
-                    or current_price <= 0
-                ):
-                    continue
-
-                coupon_pct = process_coupon(
-                    row["COUPONPERCENT"], coupon_class, self.cbr_rate
-                )
-                if coupon_pct is None:
-                    continue
-
-                purchase_price_rub = facevalue * current_price / 100
-
-                matures_within_period = (
-                    pd.notna(mat_date)
-                    and mat_date <= sell_ts
-                    and mat_date > buy_ts
-                )
-
-                if matures_within_period:
-                    actual_holding_days = (mat_date.date() - buy_date).days
-                    if actual_holding_days <= 0:
-                        continue
-
-                    calc = calculate_maturity_scenario(
-                        facevalue=facevalue,
-                        purchase_price_rub=purchase_price_rub,
-                        coupon_pct=coupon_pct,
-                        actual_holding_days=actual_holding_days,
-                        is_ofz=is_ofz,
-                    )
-                    mat_date_str = mat_date.strftime("%d.%m.%Y")
-                else:
-                    calc = calculate_sale_scenario(
-                        facevalue=facevalue,
-                        purchase_price_rub=purchase_price_rub,
-                        current_price_pct=current_price,
-                        coupon_pct=coupon_pct,
-                        holding_days=holding_days,
-                        is_ofz=is_ofz,
-                        duration_days=duration_days,
-                        rate_change_pct=rate_change,
-                    )
-                    mat_date_str = (
-                        mat_date.strftime("%d.%m.%Y")
-                        if pd.notna(mat_date)
-                        else "Нет"
-                    )
-
-                offer_date_str = (
-                    row["OFFERDATE"].strftime("%d.%m.%Y")
-                    if pd.notna(row["OFFERDATE"])
-                    else "Нет"
-                )
-
-                results.append(
-                    {
-                        "Тикер": secid,
-                        "Тип": "ОФЗ" if is_ofz else "Корпорат",
-                        "Эмитент": row["SHORTNAME"],
-                        "Тип купона": get_coupon_label(coupon_class),
-                        "Цена (%)": round(current_price, 2),
-                        "Купон (%)": round(coupon_pct, 2),
-                        "Погашение": mat_date_str,
-                        "Оферта": offer_date_str,
-                        "Статус": calc["status"],
-                        "Дней": calc["effective_days"],
-                        "Сделок": int(row["NUMTRADES"]),
-                        "Оборот (тыс)": round(row["VALUE"] / 1000, 1),
-                        "Чист. доход (₽)": round(calc["net_profit_rub"], 2),
-                        "Доход. за период (%)": round(
-                            calc["horizon_return_pct"], 2
-                        ),
-                        "Годовая доход. (%)": round(
-                            calc["annualized_return"], 2
-                        ),
-                    }
-                )
-            except Exception as e:
-                logger.debug(f"Пропуск {row.get('SECID', '?')}: {e}")
-                continue
-
-        return pd.DataFrame(results)
-
-    def _show_results(self, df: pd.DataFrame, scenario_key: str):
+    # --------------------------------------------------------
+    # Отображение результатов
+    # --------------------------------------------------------
+    def _show_results(self, df, scenario_key: str):
         """Отображает результаты в таблице."""
         self.df_results = df
-        self.df_filtered = df.copy()
+        self.df_filtered = df
 
-        scenario = config.RATE_SCENARIOS[scenario_key]
+        scenario = config.get_scenario(scenario_key)
+        self._apply_search()
+        self.status_label.configure(
+            text=f"✅ {scenario['emoji']} {scenario['name']} | "
+            f"Найдено облигаций: {len(df)}"
+        )
 
-        # Очищаем таблицу
+    def _fill_tree(self, df):
+        """Полностью перерисовывает таблицу по DataFrame."""
         for item in self.tree.get_children():
             self.tree.delete(item)
 
-        # Заполняем таблицу
         columns = list(df.columns)
         for _, row in df.iterrows():
             values = tuple(
                 row[col] if pd.notna(row[col]) else "" for col in columns
             )
             self.tree.insert("", "end", values=values)
-
-        # Применяем текущий поиск
-        self._apply_search()
-
-        # Обновляем статус
-        self.status_label.configure(
-            text=f"✅ {scenario['emoji']} {scenario['name']} | "
-            f"Найдено облигаций: {len(df)}"
-        )
 
     # --------------------------------------------------------
     # Сортировка
@@ -663,85 +521,56 @@ class NetYieldApp(ctk.CTk):
             self.sort_column = col
             self.sort_reverse = False
 
-        # Получаем текущие данные
-        data = []
-        for item in self.tree.get_children():
-            values = self.tree.item(item, "values")
-            idx = self.tree["columns"].index(col)
-            data.append((values[idx], item))
+        index = list(self.tree["columns"]).index(col)
+        data = [
+            (self.tree.item(item, "values")[index], item)
+            for item in self.tree.get_children()
+        ]
 
-        # Пытаемся преобразовать к числам для числовой сортировки
-        try:
-            data.sort(
-                key=lambda x: (
-                    float(x[0]) if x[0] not in ("", "Нет") else -999999
-                ),
-                reverse=self.sort_reverse,
+        # Тип столбца известен из схемы: числовые сортируем как числа,
+        # остальные — как строки, без try/except на каждом значении.
+        if self.column_defs[col].numeric:
+            key = lambda pair: (
+                float(pair[0]) if pair[0] not in ("", "Нет") else -999999
             )
-        except (ValueError, TypeError):
-            data.sort(key=lambda x: str(x[0]), reverse=self.sort_reverse)
+        else:
+            key = lambda pair: str(pair[0])
 
-        # Переставляем элементы
-        for index, (_, item) in enumerate(data):
-            self.tree.move(item, "", index)
+        data.sort(key=key, reverse=self.sort_reverse)
+
+        for position, (_, item) in enumerate(data):
+            self.tree.move(item, "", position)
 
         # Обновляем заголовки с индикатором сортировки
-        for c in self.tree["columns"]:
-            original_title = {
-                "secid": "Тикер",
-                "type": "Тип",
-                "issuer": "Эмитент",
-                "coupon_type": "Тип купона",
-                "price": "Цена (%)",
-                "coupon": "Купон (%)",
-                "maturity": "Погашение",
-                "offer": "Оферта",
-                "status": "Статус",
-                "days": "Дней",
-                "trades": "Сделок",
-                "turnover": "Оборот (тыс)",
-                "net_income": "Чист. доход (₽)",
-                "period_yield": "Доход. за период (%)",
-                "annual_yield": "Годовая доход. (%)",
-            }.get(c, c)
-
-            if c == col:
-                arrow = " ▼" if self.sort_reverse else " ▲"
-                self.tree.heading(c, text=original_title + arrow)
-            else:
-                self.tree.heading(c, text=original_title)
+        for column in self.tree["columns"]:
+            title = column
+            if column == col:
+                title += " ▼" if self.sort_reverse else " ▲"
+            self.tree.heading(column, text=title)
 
     # --------------------------------------------------------
     # Поиск
     # --------------------------------------------------------
     def _apply_search(self):
-        """Фильтрует таблицу по поисковому запросу."""
-        query = self.search_var.get().strip().lower()
-
+        """Фильтрует таблицу по поисковому запросу и перерисовывает её."""
         if self.df_results is None:
             return
 
+        query = self.search_var.get().strip().lower()
         if not query:
-            self.df_filtered = self.df_results.copy()
+            self.df_filtered = self.df_results
         else:
-            mask = self.df_results["Тикер"].str.lower().str.contains(
-                query, na=False
-            ) | self.df_results["Эмитент"].str.lower().str.contains(
-                query, na=False
-            )
-            self.df_filtered = self.df_results[mask].copy()
+            mask = None
+            for column in SEARCH_COLUMNS:
+                hit = (
+                    self.df_results[column]
+                    .str.lower()
+                    .str.contains(query, na=False)
+                )
+                mask = hit if mask is None else (mask | hit)
+            self.df_filtered = self.df_results[mask]
 
-        # Очищаем и перерисовываем таблицу
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-
-        columns = list(self.df_filtered.columns)
-        for _, row in self.df_filtered.iterrows():
-            values = tuple(
-                row[col] if pd.notna(row[col]) else "" for col in columns
-            )
-            self.tree.insert("", "end", values=values)
-
+        self._fill_tree(self.df_filtered)
         self.rows_label.configure(
             text=f"Строк: {len(self.df_filtered)} / {len(self.df_results)}"
         )
@@ -755,7 +584,7 @@ class NetYieldApp(ctk.CTk):
     # --------------------------------------------------------
     def _toggle_theme(self):
         """Переключает тему."""
-        mode = self.theme_switch.get()
+        mode = str(self.theme_switch.get())
         ctk.set_appearance_mode(mode)
         self.theme_switch.configure(
             text="Тёмная тема" if mode == "dark" else "Светлая тема"
@@ -774,20 +603,19 @@ class NetYieldApp(ctk.CTk):
             title="Сохранить результат",
         )
 
-        if file_path:
-            try:
-                self.df_filtered.to_csv(
-                    file_path, index=False, encoding="utf-8-sig"
-                )
-                self.status_label.configure(
-                    text=f"💾 Экспортировано: {file_path}"
-                )
-                messagebox.showinfo(
-                    "Готово",
-                    f"Данные сохранены в:\n{file_path}",
-                )
-            except Exception as e:
-                messagebox.showerror("Ошибка", f"Не удалось сохранить:\n{e}")
+        if not file_path:
+            return
+
+        try:
+            self.df_filtered.to_csv(
+                file_path, index=False, encoding="utf-8-sig"
+            )
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось сохранить:\n{e}")
+            return
+
+        self.status_label.configure(text=f"💾 Экспортировано: {file_path}")
+        messagebox.showinfo("Готово", f"Данные сохранены в:\n{file_path}")
 
     def _on_double_click(self, event):
         """Копирует выбранную строку в буфер обмена."""
@@ -806,13 +634,7 @@ class NetYieldApp(ctk.CTk):
 
     def _set_app_icon(self):
         """Устанавливает иконку окна: .ico на Windows, .png на Linux/Wine."""
-        import os
-        import sys
-
-        if getattr(sys, "frozen", False):
-            base = sys._MEIPASS  # внутри сборки
-        else:
-            base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        base = config.BASE_DIR
 
         try:
             ico = os.path.join(base, "app_icon.ico")

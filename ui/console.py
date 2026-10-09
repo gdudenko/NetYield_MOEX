@@ -2,12 +2,23 @@
 Консольный интерфейс: ввод от пользователя и вывод результатов.
 """
 
-from datetime import datetime, date
+from datetime import date, datetime
+
 import pandas as pd
+
 import app_config as config
+from analysis.result_schema import YIELD_COLUMN
 from logger import get_logger
 
 logger = get_logger(__name__)
+
+DEFAULT_SCENARIO = '2'
+
+
+def _parse_date(raw: str) -> date:
+    """Парсит дату в формате ДД.ММ.ГГГГ или ГГГГ-ММ-ДД."""
+    fmt = "%d.%m.%Y" if '.' in raw else "%Y-%m-%d"
+    return datetime.strptime(raw, fmt).date()
 
 
 def get_user_scenario() -> tuple[date, date, str]:
@@ -21,85 +32,85 @@ def get_user_scenario() -> tuple[date, date, str]:
 
     while True:
         try:
-            # 1. Дата покупки
-            today = date.today().strftime("%d.%m.%Y")
-            buy_str = input(
-                f"Введите дату покупки (ДД.ММ.ГГГГ) [Сегодня: {today}]: "
-            )
-
-            if not buy_str.strip():
-                buy_date = date.today()
-            else:
-                if '.' in buy_str:
-                    buy_date = datetime.strptime(buy_str, "%d.%m.%Y").date()
-                else:
-                    buy_date = datetime.strptime(buy_str, "%Y-%m-%d").date()
-
-            # 2. Дата продажи
-            sell_str = input("Введите дату продажи (ДД.ММ.ГГГГ): ")
-
-            if not sell_str.strip():
-                print("❌ Ошибка: Дата продажи не может быть пустой!\n")
-                continue
-
-            if '.' in sell_str:
-                sell_date = datetime.strptime(sell_str, "%d.%m.%Y").date()
-            else:
-                sell_date = datetime.strptime(sell_str, "%Y-%m-%d").date()
-
-            if sell_date <= buy_date:
-                print(
-                    "❌ Ошибка: Дата продажи должна быть позже даты покупки!\n"
-                )
-                continue
-
-            # 3. Выбор сценария ставки
-            print("\n--- ВЫБОР СЦЕНАРИЯ КЛЮЧЕВОЙ СТАВКИ ---")
-            for key, scenario in config.RATE_SCENARIOS.items():
-                emoji = scenario['emoji']
-                name = scenario['name']
-                desc = scenario['description']
-                print(f"  {key}. {emoji} {name}: {desc}")
-
-            scenario_choice = input(
-                "\nВыберите сценарий (1/2/3) [2 - Базовый]: "
-            )
-
-            if not scenario_choice.strip():
-                scenario_choice = '2'
-
-            if scenario_choice not in config.RATE_SCENARIOS:
-                print("❌ Ошибка: Выберите 1, 2 или 3\n")
-                continue
-
-            selected_scenario = config.RATE_SCENARIOS[scenario_choice]
-
-            holding_days = (sell_date - buy_date).days
-            rate_change = selected_scenario['rate_change']
-            scenario_name = selected_scenario['name']
-            emoji = selected_scenario['emoji']
-
-            print(f"\n✅ Принято:")
-            print(
-                f"   📅 Удержание: {holding_days} дней ({buy_date} -> {sell_date})"
-            )
-            print(
-                f"   {emoji} Сценарий: {scenario_name} (ставка {rate_change:+.1f}%)"
-            )
-
-            # Логируем выбор пользователя
-            logger.info(
-                f"Выбор пользователя: покупка={buy_date}, "
-                f"продажа={sell_date}, сценарий={scenario_name}"
-            )
-
-            return buy_date, sell_date, scenario_choice
-
+            buy_date = _ask_buy_date()
+            sell_date = _ask_sell_date(buy_date)
         except ValueError as e:
-            print(
-                "❌ Ошибка формата. Пример: 15.10.2025 или 2025-10-15. Попробуйте снова.\n"
-            )
+            print(f"❌ Ошибка формата. Пример: 15.10.2025 или 2025-10-15. ({e})\n")
             logger.debug(f"Ошибка ввода пользователя: {e}")
+            continue
+
+        if sell_date is None:
+            continue
+
+        scenario_key = _ask_scenario(buy_date, sell_date)
+        if scenario_key is None:
+            continue
+
+        logger.info(
+            f"Выбор пользователя: покупка={buy_date}, "
+            f"продажа={sell_date}, сценарий={scenario_key}"
+        )
+        return buy_date, sell_date, scenario_key
+
+
+def _ask_buy_date() -> date:
+    """Спрашивает дату покупки, по умолчанию — сегодня."""
+    today = date.today().strftime("%d.%m.%Y")
+    buy_str = input(f"Введите дату покупки (ДД.ММ.ГГГГ) [Сегодня: {today}]: ")
+
+    if not buy_str.strip():
+        return date.today()
+    return _parse_date(buy_str.strip())
+
+
+def _ask_sell_date(buy_date: date) -> date | None:
+    """Спрашивает дату продажи. None — ввод неверный, сценарий сначала."""
+    sell_str = input("Введите дату продажи (ДД.ММ.ГГГГ): ").strip()
+
+    if not sell_str:
+        print("❌ Ошибка: Дата продажи не может быть пустой!\n")
+        return None
+
+    sell_date = _parse_date(sell_str)
+    if sell_date <= buy_date:
+        print("❌ Ошибка: Дата продажи должна быть позже даты покупки!\n")
+        return None
+
+    return sell_date
+
+
+def _ask_scenario(buy_date: date, sell_date: date) -> str | None:
+    """Печатает сценарии и спрашивает номер. None — неверный выбор."""
+    print("\n--- ВЫБОР СЦЕНАРИЯ КЛЮЧЕВОЙ СТАВКИ ---")
+    for key, scenario in config.RATE_SCENARIOS.items():
+        print(
+            f"  {key}. {scenario['emoji']} {scenario['name']}: "
+            f"{scenario['description']}"
+        )
+
+    choices = "/".join(config.RATE_SCENARIOS)
+    choice = input(
+        f"\nВыберите сценарий ({choices}) "
+        f"[{DEFAULT_SCENARIO} - Базовый]: "
+    ).strip()
+
+    if not choice:
+        choice = DEFAULT_SCENARIO
+
+    if choice not in config.RATE_SCENARIOS:
+        print(f"❌ Ошибка: Выберите один из вариантов: {choices}\n")
+        return None
+
+    scenario = config.get_scenario(choice)
+    holding_days = (sell_date - buy_date).days
+
+    print("\n✅ Принято:")
+    print(f"   📅 Удержание: {holding_days} дней ({buy_date} -> {sell_date})")
+    print(
+        f"   {scenario['emoji']} Сценарий: {scenario['name']} "
+        f"(ставка {scenario['rate_change']:+.1f}%)"
+    )
+    return choice
 
 
 def print_results(
@@ -121,42 +132,34 @@ def print_results(
         floater_rate: Текущая ключевая ставка ЦБ.
         scenario_key: Ключ выбранного сценария.
     """
-    scenario = config.RATE_SCENARIOS[scenario_key]
-    rate_change = scenario['rate_change']
-    scenario_name = scenario['name']
-    scenario_emoji = scenario['emoji']
+    scenario = config.get_scenario(scenario_key)
 
     # Сортируем по доходности за период (от большего к меньшему)
-    top_reliable = res_df.sort_values(
-        by='Доходность за период (%)', ascending=False
-    )
+    top_reliable = res_df.sort_values(by=YIELD_COLUMN, ascending=False)
 
-    # Выводим шапку
     print("\n" + "=" * 140)
     print(
         f"🏆 РЕЗУЛЬТАТ: Удержание {holding_days} дней ({buy_date} -> {sell_date})"
     )
     print(f"🏦 Текущая ключевая ставка ЦБ: {floater_rate}%")
     print(
-        f"{scenario_emoji} Выбранный сценарий: {scenario_name} (ставка {rate_change:+.1f}%)"
+        f"{scenario['emoji']} Выбранный сценарий: {scenario['name']} "
+        f"(ставка {scenario['rate_change']:+.1f}%)"
     )
     print(f"   {scenario['description']}")
     print("=" * 140)
 
-    # Выводим таблицу
     print(top_reliable.to_markdown(index=False))
 
-    # Сохраняем в файл
     output_file = config.RESULT_CSV
     res_df.to_csv(output_file, index=False, encoding='utf-8-sig')
 
     print(f"\n[SUCCESS] Результат сохранён в '{output_file}'")
 
-    # Логируем итог
     logger.info(f"Результат выведен в консоль и сохранён в {output_file}")
     logger.info(f"Всего бумаг в результате: {len(res_df)}")
 
     # Статистика по типам
     if 'Тип' in res_df.columns:
-        type_counts = res_df['Тип'].value_counts()
-        logger.info(f"Статистика: {dict(type_counts)}")
+        counts = res_df['Тип'].value_counts()
+        logger.info(f"Статистика: {dict(zip(counts.index, counts.astype(int)))}")
