@@ -90,8 +90,17 @@ def _calculate_bond(
         logger.debug(f"{secid}: пропущена (некорректная цена или номинал)")
         return None
 
+    # Купон из выплаты нужен только флоатерам: у остальных типов он
+    # всегда есть в API, а если нет — бумага отсеивается.
+    coupon_estimate = bond.get('COUPON_ESTIMATE')
     coupon_pct = process_coupon(
-        bond['COUPONPERCENT'], coupon_class, floater_rate, rate_change
+        bond['COUPONPERCENT'],
+        coupon_class,
+        floater_rate,
+        rate_change,
+        coupon_estimate=(
+            coupon_estimate if coupon_estimate is not None else float('nan')
+        ),
     )
     if coupon_pct is None:
         logger.debug(f"{secid}: пропущена (купон < 1% и не флоатер)")

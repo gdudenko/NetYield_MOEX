@@ -183,11 +183,44 @@ def calculate_sale_scenario(
     )
 
 
+def floater_coupon_base(
+    coupon_pct: float,
+    coupon_estimate: float,
+    floater_rate: float,
+) -> float:
+    """Базовая ставка купона флоатера — до сдвига на сценарий.
+
+    Источники по убыванию надёжности:
+
+    1. COUPONPERCENT — купон, посчитанный эмитентом на дату последнего
+       расчёта. Это уже «ставка + премия», то есть ровно то, что нужно.
+    2. COUPON_ESTIMATE — та же величина, восстановленная из суммы
+       выплаты за купонный период. Актуально для бумаг, где биржа
+       публикует сумму выплаты, но не публикует процент. Тоже учитывает
+       премию эмитента.
+    3. Ключевая ставка ЦБ — последний откат. Премии эмитента не знает,
+       поэтому для флоатеров с премией систематически занижает купон.
+
+    Args:
+        coupon_pct: COUPONPERCENT из API (NaN, если не опубликован).
+        coupon_estimate: Купон, восстановленный из COUPONVALUE.
+        floater_rate: Текущая ставка ЦБ.
+
+    Returns:
+        Базовая годовая ставка купона в %.
+    """
+    for candidate in (coupon_pct, coupon_estimate):
+        if pd.notna(candidate) and candidate >= MIN_COUPON_PCT:
+            return float(candidate)
+    return floater_rate
+
+
 def process_coupon(
     coupon_pct: float,
     coupon_class: str,
     floater_rate: float,
     rate_change: float = 0.0,
+    coupon_estimate: float = float('nan'),
 ) -> float | None:
     """
     Обрабатывает купон в зависимости от типа бумаги.
@@ -198,14 +231,14 @@ def process_coupon(
     терял бы и на падении цены, и на купоне, хотя по сути его доходность
     защищена именно привязкой к ставке.
 
-    Для флоатеров с неизвестным купоном подставляется ставка ЦБ.
-    Для остальных типов используется купон из API без изменений.
+    Для остальных типов купон берётся из API без изменений.
 
     Args:
         coupon_pct: Купон из API (может быть NaN или 0).
         coupon_class: Класс купона ('floater', 'variable', 'fixed', 'unknown').
         floater_rate: Текущая ставка ЦБ для флоатеров.
         rate_change: Изменение ставки по сценарию, п.п.
+        coupon_estimate: Купон, восстановленный из суммы купонной выплаты.
 
     Returns:
         Обработанный купон в % или None, если бумагу нужно пропустить.
@@ -214,12 +247,8 @@ def process_coupon(
         coupon_pct = 0.0
 
     if coupon_class == 'floater':
-        # Купон из API — это ставка на дату последнего расчёта. Если его
-        # нет, берём ключевую ставку как базу.
-        base = (
-            floater_rate
-            if coupon_pct < MIN_COUPON_PCT
-            else float(coupon_pct)
+        base = floater_coupon_base(
+            coupon_pct, coupon_estimate, floater_rate
         )
         # Ставка не может уйти в ноль: у флоатеров есть спред к RUONIA,
         # но в сценарии -2 п.п. короткая RUONIA-премия упирается в пол.

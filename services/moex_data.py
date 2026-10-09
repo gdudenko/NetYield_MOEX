@@ -8,6 +8,7 @@
 # pyright: reportAttributeAccessIssue=false, reportReturnType=false
 # pyright: reportAssignmentType=false
 
+import numpy as np
 import pandas as pd
 
 import app_config as config
@@ -18,6 +19,7 @@ from services.http import request_with_logging
 logger = get_logger(__name__)
 
 DATA_SOURCE = 'MOEX ISS API'
+DAYS_PER_YEAR = 365
 
 SECTIONS = ('securities', 'marketdata')
 YIELDS_SECTION = 'marketdata_yields'
@@ -121,6 +123,34 @@ def fetch_moex_data() -> pd.DataFrame | None:
     return df
 
 
+def _coupon_from_value(df: pd.DataFrame) -> pd.Series:
+    """Годовая ставка купона в % из COUPONVALUE и COUPONPERIOD.
+
+    COUPONVALUE — сумма выплаты на один купонный период в рублях.
+    Годовая ставка = COUPONVALUE / FACEVALUE × 365 / COUPONPERIOD × 100.
+
+    Где выплаты ещё не рассчитаны (COUPONVALUE = 0), возвращается NaN —
+    там пойдёт откат на ключевую ставку.
+
+    Если биржа не отдала COUPONVALUE вовсе, тоже NaN: расчёт продолжает
+    работать на ставке ЦБ, лучше потерять премию, чем упасть.
+    """
+    needed = ('COUPONVALUE', 'COUPONPERIOD', 'FACEVALUE')
+    if not all(column in df.columns for column in needed):
+        logger.warning(
+            'Нет полей %s — купон флоатера берётся только из ставки ЦБ',
+            ', '.join(column for column in needed if column not in df.columns),
+        )
+        return pd.Series(np.nan, index=df.index)
+
+    cols = df[list(needed)].apply(pd.to_numeric, errors='coerce')
+    value = cols['COUPONVALUE']
+    period = cols['COUPONPERIOD']
+
+    estimate = value / cols['FACEVALUE'] * DAYS_PER_YEAR / period * 100
+    return estimate.where((value > 0) & (period > 0))
+
+
 def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
     """Готовит данные: чистит, приводит типы, добавляет производные поля."""
     initial_count = len(df)
@@ -134,6 +164,12 @@ def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
 
     for column in ('NUMTRADES', 'VALUE'):
         df[column] = pd.to_numeric(df[column], errors='coerce').fillna(0)
+
+    # Купон флоатера, посчитанный эмитентом по ставке: сумма выплаты за
+    # купонный период, приведённая к годовой ставке в %. Для бумаг, у которых
+    # биржа не публикует COUPONPERCENT, это единственный источник купона
+    # кроме ставки ЦБ — и он учитывает премию эмитента (RUONIA/КС + спред).
+    df['COUPON_ESTIMATE'] = _coupon_from_value(df)
 
     for column in ('OFFERDATE', 'MATDATE'):
         df[column] = pd.to_datetime(df[column], errors='coerce')

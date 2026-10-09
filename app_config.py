@@ -138,7 +138,7 @@ API_PARAMS = {
     "iss.only": "securities,marketdata,marketdata_yields",
     "securities.columns": (
         "SECID,ISIN,SHORTNAME,FACEVALUE,MATDATE,"
-        "COUPONPERCENT,COUPONPERIOD,BONDTYPE,BONDSUBTYPE,"
+        "COUPONPERCENT,COUPONPERIOD,COUPONVALUE,BONDTYPE,BONDSUBTYPE,"
         "COUPON_DETAILS,OFFERDATE"
     ),
     "marketdata.columns": (
